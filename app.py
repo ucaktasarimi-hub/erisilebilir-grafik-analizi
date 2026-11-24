@@ -11,7 +11,7 @@ except Exception:
     from gizli_anahtar import API_KEY
 
 # Yapay zeka bağlantısını kuruyoruz
-client = genai.Client(api_key=API_KEY.strip())
+client = genai.Client(vertexai=True, api_key=API_KEY.strip())
 
 def bilimsel_metin_duzenle(metin):
     """
