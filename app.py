@@ -5,7 +5,10 @@ from google import genai
 from google.genai import types
 from gtts import gTTS
 from PIL import Image
-from gizli_anahtar import API_KEY
+try:
+    API_KEY = st.secrets["API_KEY"]
+except Exception:
+    from gizli_anahtar import API_KEY
 
 # Yapay zeka bağlantısını kuruyoruz
 client = genai.Client(api_key=API_KEY.strip())
