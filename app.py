@@ -38,7 +38,7 @@ def get_groq_api_key() -> str:
 
 def gorseli_base64_yap(yuklenen_dosya) -> str:
     img = Image.open(yuklenen_dosya).convert("RGB")
-    img.thumbnail((1200, 1200))
+    img.thumbnail((1024, 1024))
     tampon = io.BytesIO()
     img.save(tampon, format="JPEG", quality=85)
     return base64.b64encode(tampon.getvalue()).decode("utf-8")
@@ -129,6 +129,8 @@ def aktif_gorsel_modellerini_bul(client: Groq) -> list[str]:
         "multimodal",
         "llama-4",
         "gemma-3",
+        "qwen",
+        "kimi",
     )
     haric_tut = ("whisper", "guard", "tts", "orpheus", "distil")
     try:
@@ -145,6 +147,10 @@ def aktif_gorsel_modellerini_bul(client: Groq) -> list[str]:
             if any(etiket in mid.lower() for etiket in gorsel_etiketleri)
         ]
         sirali = []
+        kayitli_model = st.session_state.get("calisan_gorsel_modeli")
+        if kayitli_model and (not aktif_ids or kayitli_model in aktif_ids):
+            sirali.append(kayitli_model)
+
         for mid in oncelikli + yedek_liste:
             if mid not in sirali and (not aktif_ids or mid in aktif_ids):
                 sirali.append(mid)
@@ -153,7 +159,7 @@ def aktif_gorsel_modellerini_bul(client: Groq) -> list[str]:
         return yedek_liste
 
 
-def groq_gorsel_yanit_al(client: Groq, base64_gorsel: str, istem: str) -> str:
+def groq_gorsel_yanit_al(client: Groq, base64_gorsel: str, istem: str, max_tokens: int = 500) -> str:
     aday_modeller = aktif_gorsel_modellerini_bul(client)
     hatalar = []
     for model_adi in aday_modeller:
@@ -175,12 +181,78 @@ def groq_gorsel_yanit_al(client: Groq, base64_gorsel: str, istem: str) -> str:
                     }
                 ],
                 temperature=0.2,
+                max_tokens=max_tokens,
             )
+            st.session_state["calisan_gorsel_modeli"] = model_adi
             return yanit.choices[0].message.content
         except Exception as e:
             hatalar.append(f"{model_adi}: {e}")
             continue
     raise RuntimeError("Aktif modellerden yanıt alınamadı:\n" + "\n".join(hatalar))
+
+
+def groq_metin_yanit_al(client: Groq, istem: str, max_tokens: int = 300) -> str:
+    tercih_edilenler = [
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "openai/gpt-oss-20b",
+        "openai/gpt-oss-120b",
+        "allam-2-7b",
+    ]
+    haric_tut = ("whisper", "guard", "tts", "orpheus")
+    try:
+        modeller = client.models.list().data
+        aktif_ids = [
+            m.id
+            for m in modeller
+            if getattr(m, "active", True)
+            and not any(h in m.id.lower() for h in haric_tut)
+        ]
+    except Exception:
+        aktif_ids = []
+
+    aday_modeller = []
+    for mid in tercih_edilenler + aktif_ids:
+        if mid not in aday_modeller and (not aktif_ids or mid in aktif_ids):
+            aday_modeller.append(mid)
+
+    son_hata = None
+    for model_adi in aday_modeller:
+        try:
+            yanit = client.chat.completions.create(
+                model=model_adi,
+                messages=[{"role": "user", "content": istem}],
+                temperature=0.2,
+                max_tokens=max_tokens,
+            )
+            return yanit.choices[0].message.content
+        except Exception as e:
+            son_hata = e
+            continue
+    raise RuntimeError(f"Metin modelinden yanıt alınamadı: {son_hata}")
+
+
+def soruya_cevap_uret(client: Groq, base64_gorsel: str, soru_metni: str) -> str:
+    gorsel_soru_istemi = (
+        "Yüklenen bu ders grafiğine veya şekline bakarak soruyu doğrudan yanıtla. "
+        "Selamlama veya rol yapma cümleleri kullanma; "
+        "ilk cümleden itibaren doğrudan sorunun cevabını kısa, açık ve sesli okumaya uygun Türkçe ile ver.\n\n"
+        f"Soru: {soru_metni}"
+    )
+    try:
+        return groq_gorsel_yanit_al(client, base64_gorsel, gorsel_soru_istemi, max_tokens=280)
+    except Exception:
+        mevcut_analiz = st.session_state.get("analiz_sonucu", "")
+        if not mevcut_analiz:
+            raise
+        metin_soru_istemi = (
+            "Aşağıdaki ders grafiği analizine dayanarak öğrencinin sorusunu doğrudan yanıtla. "
+            "Selamlama veya rol yapma cümleleri kullanma; "
+            "ilk cümleden itibaren doğrudan sorunun cevabını kısa, açık ve sesli okumaya uygun Türkçe ile ver.\n\n"
+            f"Grafik Analizi:\n{mevcut_analiz}\n\n"
+            f"Soru: {soru_metni}"
+        )
+        return groq_metin_yanit_al(client, metin_soru_istemi, max_tokens=280)
 
 
 def sesi_metne_cevir(client: Groq, ses_dosyasi) -> str:
@@ -288,9 +360,9 @@ if yuklenen_gorsel is not None:
         if anlatim_modu.startswith("Detaylı"):
             istem = (
                 kapsam_ve_sonifikasyon_kurali
-                + "Ardından akıcı, anlaşılır ve sesli okumaya uygun Türkçe ile şu 4 adımda detaylandır:\n"
+                + "Ardından akıcı, anlaşılır ve sesli okumaya uygun Türkçe ile şu 4 adımda kısa ve öz detaylandır:\n"
                 "1. Görselin Tanımı: Grafiğin, tablonun veya şeklin tam olarak ne olduğunu ve konusunu belirt.\n"
-                "2. Eksenler ve Bileşenler: X ve Y eksenlerinin adlarını, birimlerini, renkleri veya geometrik elemanları tek tek açıkla.\n"
+                "2. Eksenler ve Bileşenler: X ve Y eksenlerinin adlarını, birimlerini, renkleri veya geometrik elemanları net açıkla.\n"
                 "3. Veri Eğilimi ve Kritik Noktalar: Artış, azalış, tepe, dip, açı, kenar ve kesişim noktalarını sayısal değerleriyle aktar.\n"
                 "4. Temel Sonuç: Bu görselden çıkarılması gereken ana bilgiyi özetle."
                 + sonifikasyon_ek_talimati
@@ -304,7 +376,7 @@ if yuklenen_gorsel is not None:
 
         with st.spinner("Görsel kontrol ediliyor ve analiz hazırlanıyor..."):
             try:
-                ham_yanit = groq_gorsel_yanit_al(client, base64_gorsel, istem)
+                ham_yanit = groq_gorsel_yanit_al(client, base64_gorsel, istem, max_tokens=520)
                 if "KAPSAM_DISI" in ham_yanit.strip().upper():
                     st.session_state["kapsam_disi"] = True
                     st.session_state.pop("analiz_sonucu", None)
@@ -365,13 +437,7 @@ if yuklenen_gorsel is not None:
                     try:
                         soru_metni = sesi_metne_cevir(client, sesli_soru).strip()
                         if soru_metni:
-                            soru_istemi = (
-                                "Yüklenen bu ders grafiğine veya şekline bakarak soruyu doğrudan yanıtla. "
-                                "Selamlama veya rol yapma cümleleri kullanma; "
-                                "ilk cümleden itibaren doğrudan sorunun cevabını açık, net ve sesli okumaya uygun Türkçe ile ver.\n\n"
-                                f"Soru: {soru_metni}"
-                            )
-                            cevap_metni = groq_gorsel_yanit_al(client, base64_gorsel, soru_istemi)
+                            cevap_metni = soruya_cevap_uret(client, base64_gorsel, soru_metni)
                             st.session_state["son_islenen_ses"] = ses_kimligi
                             st.session_state["son_soru_metni"] = soru_metni
                             st.session_state["son_cevap_metni"] = cevap_metni
@@ -387,13 +453,7 @@ if yuklenen_gorsel is not None:
                 else:
                     with st.spinner("Sorunuz yanıtlanıyor..."):
                         try:
-                            soru_istemi = (
-                                "Yüklenen bu ders grafiğine veya şekline bakarak soruyu doğrudan yanıtla. "
-                                "Selamlama veya rol yapma cümleleri kullanma; "
-                                "ilk cümleden itibaren doğrudan sorunun cevabını açık, net ve sesli okumaya uygun Türkçe ile ver.\n\n"
-                                f"Soru: {yazili_soru.strip()}"
-                            )
-                            cevap_metni = groq_gorsel_yanit_al(client, base64_gorsel, soru_istemi)
+                            cevap_metni = soruya_cevap_uret(client, base64_gorsel, yazili_soru.strip())
                             st.session_state["son_soru_metni"] = yazili_soru.strip()
                             st.session_state["son_cevap_metni"] = cevap_metni
                             st.session_state["son_cevap_mp3"] = metni_mp3_yap(cevap_metni)
