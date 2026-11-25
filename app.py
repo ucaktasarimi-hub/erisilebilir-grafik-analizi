@@ -179,18 +179,23 @@ if yuklenen_gorsel is not None:
     if st.button("Grafiği Analiz Et"):
         if anlatim_modu.startswith("Detaylı"):
             istem = (
-                "Sen görme engelli öğrencilere teknik grafikleri, tabloları ve şekilleri betimleyen uzman bir öğretmensin. "
-                "Bu görseli akıcı, anlaşılır ve sesli okumaya uygun Türkçe ile tam olarak şu 4 adımda açıkla:\n"
-                "1. Genel Bakış: Grafiğin veya şeklin ne olduğunu ve ana konusunu söyle.\n"
-                "2. Eksenler ve Bileşenler: X ve Y eksenlerinin adlarını, birimlerini, renkleri veya geometrik elemanları net belirt.\n"
-                "3. Veri Eğilimi ve Kritik Noktalar: Artış, azalış, tepe, dip ve kesişim noktalarını sayısal değerleriyle aktar.\n"
-                "4. Pedagojik Sonuç: Öğrencinin bu grafikten çıkarması gereken temel sonucu özetle."
+                "Görme engelli öğrenciler için teknik grafikleri, tabloları ve şekilleri doğrudan betimle. "
+                "KESİNLİKLE 'Merhaba', 'Hoş geldin', 'Ben senin öğretmeninim', 'Geometri öğretmeninim' gibi "
+                "selamlama, rol yapma veya tanıtım cümleleri kurma. "
+                "İlk cümlede doğrudan bu görselin ne grafiği veya ne şekli olduğunu net bir şekilde söyle "
+                "(örneğin: 'Bu görsel, ... gösteren bir sütun grafiğidir.' veya 'Bu görsel, ... içeren bir geometrik şekildir.'). "
+                "Ardından akıcı, anlaşılır ve sesli okumaya uygun Türkçe ile şu 4 adımda detaylandır:\n"
+                "1. Görselin Tanımı: Grafiğin, tablonun veya şeklin tam olarak ne olduğunu ve konusunu belirt.\n"
+                "2. Eksenler ve Bileşenler: X ve Y eksenlerinin adlarını, birimlerini, renkleri veya geometrik elemanları tek tek açıkla.\n"
+                "3. Veri Eğilimi ve Kritik Noktalar: Artış, azalış, tepe, dip, açı, kenar ve kesişim noktalarını sayısal değerleriyle aktar.\n"
+                "4. Temel Sonuç: Bu görselden çıkarılması gereken ana bilgiyi özetle."
             )
         else:
             istem = (
-                "Sen görme engelli öğrencilere destek olan bir öğretmensin. "
-                "Bu görseli 3-4 cümlede, en önemli sayısal değerleri ve ana sonucu vurgulayarak "
-                "sesli dinlemeye uygun sade bir Türkçe ile özetle."
+                "Görme engelli öğrenciler için bu görseli doğrudan özetle. "
+                "KESİNLİKLE 'Merhaba', 'Ben senin öğretmeninim' gibi selamlama veya tanıtım cümlesi kurma. "
+                "İlk cümlede doğrudan bu görselin ne grafiği veya ne şekli olduğunu söyle, "
+                "ardından 2-3 cümlede en önemli sayısal değerleri ve ana sonucu sesli dinlemeye uygun sade bir Türkçe ile aktar."
             )
 
         with st.spinner("Grafik analiz ediliyor ve ses dosyası hazırlanıyor..."):
@@ -229,9 +234,10 @@ if yuklenen_gorsel is not None:
                         st.warning("Lütfen mikrofonla bir soru kaydedin veya metin kutusuna yazın.")
                     else:
                         soru_istemi = (
-                            "Sen görme engelli bir öğrenciye yardımcı olan bir öğretmensin. "
-                            "Yüklenen bu grafiğe bakarak öğrencinin şu sorusunu açık, net ve sesli okumaya uygun "
-                            f"Türkçe ile yanıtla:\n\nÖğrencinin Sorusu: {soru_metni}"
+                            "Yüklenen bu grafiğe veya şekle bakarak soruyu doğrudan yanıtla. "
+                            "KESİNLİKLE 'Merhaba', 'Tabii ki', 'Ben senin öğretmeninim' gibi giriş veya selamlama cümleleri kullanma; "
+                            "ilk cümleden itibaren doğrudan sorunun cevabını açık, net ve sesli okumaya uygun Türkçe ile ver.\n\n"
+                            f"Soru: {soru_metni}"
                         )
                         cevap_metni = groq_gorsel_yanit_al(client, base64_gorsel, soru_istemi)
                         cevap_mp3 = metni_mp3_yap(cevap_metni)
