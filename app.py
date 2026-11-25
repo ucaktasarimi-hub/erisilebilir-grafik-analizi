@@ -1,7 +1,4 @@
-import os
-import io
-import re
-import base64
+import os, io, re, base64
 import streamlit as st
 from PIL import Image
 from gtts import gTTS
@@ -9,129 +6,74 @@ from groq import Groq
 
 st.set_page_config(page_title="Erişilebilir Grafik Asistanı", layout="centered")
 
-
 def get_groq_api_key() -> str:
     try:
         if "GROQ_API_KEY" in st.secrets:
             return str(st.secrets["GROQ_API_KEY"]).strip().strip('"').strip("'")
     except Exception:
         pass
-
     env_key = os.environ.get("GROQ_API_KEY", "").strip().strip('"').strip("'")
     if env_key:
         return env_key
-
     try:
         import gizli_anahtar
         key = getattr(gizli_anahtar, "GROQ_API_KEY", "") or getattr(gizli_anahtar, "API_KEY", "")
-        temiz_key = str(key).strip().strip('"').strip("'")
-        if temiz_key.startswith("gsk_"):
-            return temiz_key
+        temiz = str(key).strip().strip('"').strip("'")
+        if temiz.startswith("gsk_"):
+            return temiz
     except ImportError:
         pass
-
     return ""
 
-
-def gorseli_base64_yap(yuklenen_dosya) -> str:
-    img = Image.open(yuklenen_dosya).convert("RGB")
+def gorseli_base64_yap(dosya) -> str:
+    img = Image.open(dosya).convert("RGB")
     img.thumbnail((1024, 1024))
     tampon = io.BytesIO()
     img.save(tampon, format="JPEG", quality=85)
     return base64.b64encode(tampon.getvalue()).decode("utf-8")
 
-
-def ses_icin_metni_duzenle(metin: str) -> str:
-    # Ekrandaki yazıyı bozmadan yalnızca Türkçe seslendirme telaffuzunu netleştirir
-    duzenli = metin.replace("*", "").replace("#", "").replace("`", "")
-    duzenli = re.sub(r"\b[Xx]\s+ve\s+[Yy]\b", "iks ve ye", duzenli)
-    duzenli = re.sub(r"\b[Yy]\s+ve\s+[Xx]\b", "ye ve iks", duzenli)
-    duzenli = re.sub(r"\b[Yy]\s*[-–]?\s*(eksen\w*)", r"ye \1", duzenli)
-    duzenli = re.sub(r"\b[Xx]\s*[-–]?\s*(eksen\w*)", r"iks \1", duzenli)
-    duzenli = re.sub(r"\b[Yy]\s*=", "ye eşittir ", duzenli)
-    duzenli = re.sub(r"\b[Xx]\s*=", "iks eşittir ", duzenli)
-    duzenli = duzenli.replace(":", ". ")
-    duzenli = re.sub(r"\n+", ". ", duzenli)
-    duzenli = re.sub(r"\.\s*\.", ".", duzenli)
-    return duzenli.strip()
-
-
 def metni_mp3_yap(metin: str) -> bytes:
-    ses_metni = ses_icin_metni_duzenle(metin)
-    tts = gTTS(text=ses_metni, lang="tr", slow=False)
-    ses_tamponu = io.BytesIO()
-    tts.write_to_fp(ses_tamponu)
-    ses_tamponu.seek(0)
-    return ses_tamponu.read()
+    d = metin.replace("*", "").replace("#", "").replace("`", "")
+    d = re.sub(r"\b[Xx]\s+ve\s+[Yy]\b", "iks ve ye", d)
+    d = re.sub(r"\b[Yy]\s+ve\s+[Xx]\b", "ye ve iks", d)
+    d = re.sub(r"\b[Yy]\s*[-–]?\s*(eksen\w*)", r"ye \1", d)
+    d = re.sub(r"\b[Xx]\s*[-–]?\s*(eksen\w*)", r"iks \1", d)
+    d = re.sub(r"\b[Yy]\s*=", "ye eşittir ", d)
+    d = re.sub(r"\b[Xx]\s*=", "iks eşittir ", d)
+    d = re.sub(r"\.\s*\.", ".", re.sub(r"\n+", ". ", d.replace(":", ". "))).strip()
+    tampon = io.BytesIO()
+    gTTS(text=d, lang="tr", slow=False).write_to_fp(tampon)
+    tampon.seek(0)
+    return tampon.read()
 
-
-def aktif_gorsel_modellerini_bul(client: Groq) -> list[str]:
-    yedek_liste = [
-        "meta-llama/llama-4-scout-17b-16e-instruct",
-        "meta-llama/llama-4-maverick-17b-128e-instruct",
-    ]
-    gorsel_etiketleri = (
-        "vision",
-        "scout",
-        "maverick",
-        "-vl",
-        "vl-",
-        "pixtral",
-        "llava",
-        "multimodal",
-        "llama-4",
-        "gemma-3",
-        "qwen",
-        "kimi",
-    )
-    haric_tut = ("whisper", "guard", "tts", "orpheus", "distil")
+def aktif_modelleri_getir(client: Groq, haric: tuple) -> list[str]:
     try:
-        modeller = client.models.list().data
-        aktif_ids = [
-            m.id
-            for m in modeller
-            if getattr(m, "active", True)
-            and not any(h in m.id.lower() for h in haric_tut)
+        return [
+            m.id for m in client.models.list().data
+            if getattr(m, "active", True) and not any(h in m.id.lower() for h in haric)
         ]
-        oncelikli = [
-            mid
-            for mid in aktif_ids
-            if any(etiket in mid.lower() for etiket in gorsel_etiketleri)
-        ]
-        sirali = []
-        kayitli_model = st.session_state.get("calisan_gorsel_modeli")
-        if kayitli_model and (not aktif_ids or kayitli_model in aktif_ids):
-            sirali.append(kayitli_model)
-
-        for mid in oncelikli + yedek_liste:
-            if mid not in sirali and (not aktif_ids or mid in aktif_ids):
-                sirali.append(mid)
-        return sirali if sirali else (aktif_ids if aktif_ids else yedek_liste)
     except Exception:
-        return yedek_liste
+        return []
 
-
-def groq_gorsel_yanit_al(client: Groq, base64_gorsel: str, istem: str, max_tokens: int = 500) -> str:
-    aday_modeller = aktif_gorsel_modellerini_bul(client)
+def groq_gorsel_yanit_al(client: Groq, b64: str, istem: str, max_tokens: int = 500) -> str:
+    yedek = ["meta-llama/llama-4-scout-17b-16e-instruct", "meta-llama/llama-4-maverick-17b-128e-instruct"]
+    etiketler = ("vision", "scout", "maverick", "-vl", "vl-", "pixtral", "llava", "multimodal", "llama-4", "gemma-3", "qwen", "kimi")
+    aktif = aktif_modelleri_getir(client, ("whisper", "guard", "tts", "orpheus", "distil"))
+    oncelikli = [m for m in aktif if any(e in m.lower() for e in etiketler)]
+    adaylar = []
+    kayitli = st.session_state.get("calisan_gorsel_modeli")
+    for m in ([kayitli] if kayitli else []) + oncelikli + yedek:
+        if m and m not in adaylar and (not aktif or m in aktif):
+            adaylar.append(m)
     hatalar = []
-    for model_adi in aday_modeller:
+    for model_adi in (adaylar or aktif or yedek):
         try:
             yanit = client.chat.completions.create(
                 model=model_adi,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": istem},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{base64_gorsel}"
-                                },
-                            },
-                        ],
-                    }
-                ],
+                messages=[{"role": "user", "content": [
+                    {"type": "text", "text": istem},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                ]}],
                 temperature=0.2,
                 max_tokens=max_tokens,
             )
@@ -139,37 +81,17 @@ def groq_gorsel_yanit_al(client: Groq, base64_gorsel: str, istem: str, max_token
             return yanit.choices[0].message.content
         except Exception as e:
             hatalar.append(f"{model_adi}: {e}")
-            continue
     raise RuntimeError("Aktif modellerden yanıt alınamadı:\n" + "\n".join(hatalar))
 
-
-def groq_metin_yanit_al(client: Groq, istem: str, max_tokens: int = 300) -> str:
-    tercih_edilenler = [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-        "openai/gpt-oss-20b",
-        "openai/gpt-oss-120b",
-        "allam-2-7b",
-    ]
-    haric_tut = ("whisper", "guard", "tts", "orpheus")
-    try:
-        modeller = client.models.list().data
-        aktif_ids = [
-            m.id
-            for m in modeller
-            if getattr(m, "active", True)
-            and not any(h in m.id.lower() for h in haric_tut)
-        ]
-    except Exception:
-        aktif_ids = []
-
-    aday_modeller = []
-    for mid in tercih_edilenler + aktif_ids:
-        if mid not in aday_modeller and (not aktif_ids or mid in aktif_ids):
-            aday_modeller.append(mid)
-
+def groq_metin_yanit_al(client: Groq, istem: str, max_tokens: int = 280) -> str:
+    tercih = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-20b", "openai/gpt-oss-120b", "allam-2-7b"]
+    aktif = aktif_modelleri_getir(client, ("whisper", "guard", "tts", "orpheus"))
+    adaylar = []
+    for m in tercih + aktif:
+        if m not in adaylar and (not aktif or m in aktif):
+            adaylar.append(m)
     son_hata = None
-    for model_adi in aday_modeller:
+    for model_adi in adaylar:
         try:
             yanit = client.chat.completions.create(
                 model=model_adi,
@@ -180,41 +102,29 @@ def groq_metin_yanit_al(client: Groq, istem: str, max_tokens: int = 300) -> str:
             return yanit.choices[0].message.content
         except Exception as e:
             son_hata = e
-            continue
     raise RuntimeError(f"Metin modelinden yanıt alınamadı: {son_hata}")
 
-
-def soruya_cevap_uret(client: Groq, base64_gorsel: str, soru_metni: str) -> str:
-    gorsel_soru_istemi = (
-        "Yüklenen bu ders grafiğine veya şekline bakarak soruyu doğrudan yanıtla. "
+def soruya_cevap_uret(client: Groq, b64: str, soru: str, gecmis: list[dict]) -> str:
+    baglam = ""
+    if gecmis:
+        satirlar = [f"Önceki Soru: {k['soru']}\nÖnceki Yanıt: {k['cevap']}" for k in gecmis[-3:]]
+        baglam = "Önceki konuşma bağlamı (devam sorusuysa dikkate al):\n" + "\n".join(satirlar) + "\n\n"
+    temel = (
         "Selamlama veya rol yapma cümleleri kullanma; "
         "ilk cümleden itibaren doğrudan sorunun cevabını kısa, açık ve sesli okumaya uygun Türkçe ile ver.\n\n"
-        f"Soru: {soru_metni}"
     )
     try:
-        return groq_gorsel_yanit_al(client, base64_gorsel, gorsel_soru_istemi, max_tokens=280)
+        return groq_gorsel_yanit_al(client, b64, "Yüklenen ders grafiğine bakarak soruyu yanıtla. " + temel + baglam + f"Yeni Soru: {soru}", 280)
     except Exception:
-        mevcut_analiz = st.session_state.get("analiz_sonucu", "")
-        if not mevcut_analiz:
+        analiz = st.session_state.get("analiz_sonucu", "")
+        if not analiz:
             raise
-        metin_soru_istemi = (
-            "Aşağıdaki ders grafiği analizine dayanarak öğrencinin sorusunu doğrudan yanıtla. "
-            "Selamlama veya rol yapma cümleleri kullanma; "
-            "ilk cümleden itibaren doğrudan sorunun cevabını kısa, açık ve sesli okumaya uygun Türkçe ile ver.\n\n"
-            f"Grafik Analizi:\n{mevcut_analiz}\n\n"
-            f"Soru: {soru_metni}"
-        )
-        return groq_metin_yanit_al(client, metin_soru_istemi, max_tokens=280)
-
+        return groq_metin_yanit_al(client, "Aşağıdaki grafik analizine göre soruyu yanıtla. " + temel + f"Analiz:\n{analiz}\n\n" + baglam + f"Yeni Soru: {soru}", 280)
 
 def sesi_metne_cevir(client: Groq, ses_dosyasi) -> str:
-    transkript = client.audio.transcriptions.create(
-        file=("soru.wav", ses_dosyasi.getvalue()),
-        model="whisper-large-v3-turbo",
-        language="tr",
-    )
-    return transkript.text
-
+    return client.audio.transcriptions.create(
+        file=("soru.wav", ses_dosyasi.getvalue()), model="whisper-large-v3-turbo", language="tr"
+    ).text
 
 api_key = get_groq_api_key()
 if not api_key:
@@ -222,190 +132,153 @@ if not api_key:
     st.stop()
 
 client = Groq(api_key=api_key)
-
 st.title("Erişilebilir Grafik Analiz Arayüzü")
 st.write("Görme engelli öğrenciler için sesli ve etkileşimli teknik grafik yorumlama asistanı")
 
 if st.button("Uygulama Kullanım Rehberini Sesli Dinle"):
-    rehber_metni = (
+    rehber = (
         "Erişilebilir Grafik Analiz Arayüzüne hoş geldiniz. "
-        "Birinci adımda cihazınızdan bir ders grafiği seçebilir veya kamerayla doğrudan fotoğraf çekebilirsiniz. "
-        "İkinci adımda anlatım modunu seçip Grafiği Analiz Et düğmesine basın; "
-        "oluşturulan açıklama otomatik olarak okunmaya başlar ve dilerseniz MP3 dosyası olarak indirebilirsiniz. "
-        "Üçüncü adımda ise mikrofona dokunup sorunuzu söyledikten sonra kaydı durdurduğunuzda yanıt otomatik olarak seslendirilir."
+        "Birinci adımda cihazınızdan bir ders grafiği seçebilir veya kamerayla fotoğraf çekebilirsiniz. "
+        "İkinci adımda anlatım modunu seçip Grafiği Analiz Et düğmesine basın; açıklama otomatik okunmaya başlar. "
+        "Üçüncü adımda mikrofona dokunup sorunuzu söyleyip durdurduğunuzda yanıt otomatik seslendirilir."
     )
-    rehber_mp3 = metni_mp3_yap(rehber_metni)
+    rehber_mp3 = metni_mp3_yap(rehber)
     st.audio(rehber_mp3, format="audio/mp3", autoplay=True)
-    st.download_button(
-        label="Kullanım Rehberini MP3 İndir",
-        data=rehber_mp3,
-        file_name="kullanim_rehberi.mp3",
-        mime="audio/mp3",
-    )
+    st.download_button("Kullanım Rehberini MP3 İndir", rehber_mp3, "kullanim_rehberi.mp3", "audio/mp3")
 
 st.divider()
-
 st.header("1. Adım: İncelenecek Grafiği Ekleyin")
-giris_yontemi = st.radio(
-    "Görsel ekleme yöntemini seçin:",
-    ["Cihazdan Dosya Yükle", "Kamera ile Fotoğraf Çek"],
-    horizontal=True,
-)
-
-if giris_yontemi == "Cihazdan Dosya Yükle":
-    yuklenen_gorsel = st.file_uploader(
-        "Analiz edilecek ders grafiği veya şekil fotoğrafını seçin",
-        type=["jpg", "jpeg", "png"],
-    )
+yontem = st.radio("Görsel ekleme yöntemini seçin:", ["Cihazdan Dosya Yükle", "Kamera ile Fotoğraf Çek"], horizontal=True)
+if yontem == "Cihazdan Dosya Yükle":
+    gorsel = st.file_uploader("Analiz edilecek ders grafiği veya şekil fotoğrafını seçin", type=["jpg", "jpeg", "png"])
 else:
-    yuklenen_gorsel = st.camera_input("Ders kitabındaki veya kağıttaki grafiğin fotoğrafını çekin")
+    gorsel = st.camera_input("Ders kitabındaki veya kağıttaki grafiğin fotoğrafını çekin")
 
-if yuklenen_gorsel is not None:
-    dosya_kimligi = f"{getattr(yuklenen_gorsel, 'name', 'gorsel')}_{getattr(yuklenen_gorsel, 'size', 0)}"
-    if st.session_state.get("son_dosya") != dosya_kimligi:
-        st.session_state["son_dosya"] = dosya_kimligi
-        for anahtar in (
-            "analiz_sonucu",
-            "analiz_mp3",
-            "kapsam_disi",
-            "uyari_mp3",
-            "son_islenen_ses",
-            "son_soru_metni",
-            "son_cevap_metni",
-            "son_cevap_mp3",
-            "otomatik_cal",
-        ):
-            st.session_state.pop(anahtar, None)
+if gorsel is not None:
+    kimlik = f"{getattr(gorsel, 'name', 'gorsel')}_{getattr(gorsel, 'size', 0)}"
+    if st.session_state.get("son_dosya") != kimlik:
+        st.session_state["son_dosya"] = kimlik
+        for k in ("analiz_sonucu", "analiz_mp3", "kapsam_disi", "uyari_mp3", "son_islenen_ses", "soru_gecmisi", "otomatik_cal"):
+            st.session_state.pop(k, None)
 
-    st.image(yuklenen_gorsel, caption="Seçilen Görsel", use_container_width=True)
-    base64_gorsel = gorseli_base64_yap(yuklenen_gorsel)
+    st.image(gorsel, caption="Seçilen Görsel", use_container_width=True)
+    b64_gorsel = gorseli_base64_yap(gorsel)
 
     st.header("2. Adım: Anlatım Modunu Seçin ve Yorumlayın")
-    anlatim_modu = st.radio(
-        "Anlatım derinliğini belirleyin:",
-        [
-            "Detaylı Öğretim Modu (4 Adımlı Analiz)",
-            "Hızlı Özet Modu (Kısa ve Net)",
-        ],
-    )
-
-    kapsam_kurali = (
+    mod = st.radio("Anlatım derinliğini belirleyin:", ["Detaylı Öğretim Modu (4 Adımlı Analiz)", "Hızlı Özet Modu (Kısa ve Net)"])
+    kapsam = (
         "ÖNCE GÖRSELİN KAPSAMINI KONTROL ET:\n"
-        "- Bu görsel bir ders materyali mi? (Matematik/fen grafiği, veri tablosu, geometrik şekil, "
-        "bilimsel/teknik şema, devre çizimi, harita veya şekilli ders/sınav sorusu)\n"
-        "- Eğer görsel bir ders materyali DEĞİLSE (örneğin insan fotoğrafı, özçekim, manzara, oda/masa fotoğrafı, "
-        "günlük eşya, hayvan, yiyecek veya alakasız bir resimse) başka HİÇBİR ŞEY YAZMA ve yalnızca şu tek kelimeyi döndür: KAPSAM_DISI\n\n"
-        "EĞER GÖRSEL BİR DERS MATERYALİ İSE:\n"
-        "- 'Merhaba', 'Hoş geldin', 'Ben senin öğretmeninim', 'Geometri öğretmeninim' gibi selamlama veya rol yapma cümleleri KULLANMA.\n"
+        "- Bu görsel bir ders materyali mi? (Matematik/fen grafiği, veri tablosu, geometrik şekil, teknik şema, devre, harita veya şekilli sınav sorusu)\n"
+        "- Eğer ders materyali DEĞİLSE (insan, özçekim, manzara, eşya, hayvan, yiyecek vb.) başka HİÇBİR ŞEY YAZMA ve yalnızca şu kelimeyi döndür: KAPSAM_DISI\n\n"
+        "EĞER DERS MATERYALİ İSE:\n"
+        "- 'Merhaba', 'Hoş geldin', 'Ben senin öğretmeninim' gibi selamlama veya rol yapma cümleleri KULLANMA.\n"
         "- İlk cümlede doğrudan bu görselin ne grafiği, tablosu veya şekli olduğunu söyle.\n"
     )
 
     if st.button("Grafiği Analiz Et"):
-        if anlatim_modu.startswith("Detaylı"):
-            istem = (
-                kapsam_kurali
-                + "Ardından akıcı, anlaşılır ve sesli okumaya uygun Türkçe ile şu 4 adımda kısa ve öz detaylandır:\n"
-                "1. Görselin Tanımı: Grafiğin, tablonun veya şeklin tam olarak ne olduğunu ve konusunu belirt.\n"
-                "2. Eksenler ve Bileşenler: Yatay X ekseni ve dikey Y ekseninin adlarını, birimlerini, renkleri veya geometrik elemanları net açıkla.\n"
-                "3. Veri Eğilimi ve Kritik Noktalar: Artış, azalış, tepe, dip, açı, kenar ve kesişim noktalarını sayısal değerleriyle aktar.\n"
+        if mod.startswith("Detaylı"):
+            istem = kapsam + (
+                "Ardından akıcı ve sesli okumaya uygun Türkçe ile 4 adımda kısa ve öz detaylandır:\n"
+                "1. Görselin Tanımı: Grafiğin, tablonun veya şeklin ne olduğunu ve konusunu belirt.\n"
+                "2. Eksenler ve Bileşenler: Yatay X ekseni ve dikey Y ekseninin adlarını, birimlerini veya geometrik elemanları açıkla.\n"
+                "3. Veri Eğilimi ve Kritik Noktalar: Artış, azalış, tepe, dip, açı, kenar ve kesişimleri sayısal değerleriyle aktar.\n"
                 "4. Temel Sonuç: Bu görselden çıkarılması gereken ana bilgiyi özetle."
             )
         else:
-            istem = (
-                kapsam_kurali
-                + "Ardından 2-3 cümlede en önemli sayısal değerleri ve ana sonucu sesli dinlemeye uygun sade bir Türkçe ile özetle."
-            )
+            istem = kapsam + "Ardından 2-3 cümlede en önemli sayısal değerleri ve ana sonucu sade bir Türkçe ile özetle."
 
         with st.spinner("Görsel kontrol ediliyor ve analiz hazırlanıyor..."):
             try:
-                analiz_metni = groq_gorsel_yanit_al(client, base64_gorsel, istem, max_tokens=520)
-                if "KAPSAM_DISI" in analiz_metni.strip().upper():
+                yanit = groq_gorsel_yanit_al(client, b64_gorsel, istem, 520)
+                if "KAPSAM_DISI" in yanit.strip().upper():
                     st.session_state["kapsam_disi"] = True
                     st.session_state.pop("analiz_sonucu", None)
-                    uyari_metni = (
-                        "Bu görsel bir ders grafiği, veri tablosu, harita veya geometrik şekil olarak algılanmadı. "
-                        "Lütfen analiz için bir eğitim materyali yükleyin."
-                    )
-                    st.session_state["uyari_mp3"] = metni_mp3_yap(uyari_metni)
+                    uyari = "Bu görsel bir ders grafiği, veri tablosu, harita veya geometrik şekil olarak algılanmadı. Lütfen bir eğitim materyali yükleyin."
+                    st.session_state["uyari_mp3"] = metni_mp3_yap(uyari)
                     st.session_state["otomatik_cal"] = "uyari"
                 else:
                     st.session_state["kapsam_disi"] = False
-                    st.session_state["analiz_sonucu"] = analiz_metni
-                    st.session_state["analiz_mp3"] = metni_mp3_yap(analiz_metni)
+                    st.session_state["analiz_sonucu"] = yanit
+                    st.session_state["analiz_mp3"] = metni_mp3_yap(yanit)
                     st.session_state["otomatik_cal"] = "analiz"
             except Exception as hata:
                 st.error(f"Analiz sırasında bir sorun oluştu: {hata}")
 
     if st.session_state.get("kapsam_disi"):
-        st.warning(
-            "Bu görsel bir ders grafiği, veri tablosu, harita veya geometrik şekil olarak algılanmadı. "
-            "Lütfen analiz için bir eğitim materyali yükleyin."
-        )
-        uyari_otomatik = st.session_state.get("otomatik_cal") == "uyari"
-        if uyari_otomatik:
+        st.warning("Bu görsel bir ders grafiği, veri tablosu, harita veya geometrik şekil olarak algılanmadı. Lütfen bir eğitim materyali yükleyin.")
+        oto = st.session_state.get("otomatik_cal") == "uyari"
+        if oto:
             st.session_state.pop("otomatik_cal", None)
-        st.audio(st.session_state["uyari_mp3"], format="audio/mp3", autoplay=uyari_otomatik)
+        st.audio(st.session_state["uyari_mp3"], format="audio/mp3", autoplay=oto)
 
     elif "analiz_sonucu" in st.session_state:
         st.subheader("Grafik Açıklaması")
         st.write(st.session_state["analiz_sonucu"])
-        analiz_otomatik = st.session_state.get("otomatik_cal") == "analiz"
-        if analiz_otomatik:
+        oto = st.session_state.get("otomatik_cal") == "analiz"
+        if oto:
             st.session_state.pop("otomatik_cal", None)
-        st.audio(st.session_state["analiz_mp3"], format="audio/mp3", autoplay=analiz_otomatik)
-        st.download_button(
-            label="Analizi MP3 Olarak İndir",
-            data=st.session_state["analiz_mp3"],
-            file_name="grafik_analizi.mp3",
-            mime="audio/mp3",
-        )
+        st.audio(st.session_state["analiz_mp3"], format="audio/mp3", autoplay=oto)
+        st.download_button("Analizi MP3 Olarak İndir", st.session_state["analiz_mp3"], "grafik_analizi.mp3", "audio/mp3")
 
         st.divider()
         st.header("3. Adım: Grafik Hakkında Soru Sorun")
         sesli_soru = st.audio_input("Mikrofona dokunun, sorunuzu söyleyin ve kaydı durdurun (otomatik yanıtlanır ve okunur)")
 
         if sesli_soru is not None:
-            ses_kimligi = hash(sesli_soru.getvalue())
-            if st.session_state.get("son_islenen_ses") != ses_kimligi:
+            ses_id = hash(sesli_soru.getvalue())
+            if st.session_state.get("son_islenen_ses") != ses_id:
                 with st.spinner("Sesli sorunuz algılanıyor ve yanıt hazırlanıyor..."):
                     try:
-                        soru_metni = sesi_metne_cevir(client, sesli_soru).strip()
-                        if soru_metni:
-                            cevap_metni = soruya_cevap_uret(client, base64_gorsel, soru_metni)
-                            st.session_state["son_islenen_ses"] = ses_kimligi
-                            st.session_state["son_soru_metni"] = soru_metni
-                            st.session_state["son_cevap_metni"] = cevap_metni
-                            st.session_state["son_cevap_mp3"] = metni_mp3_yap(cevap_metni)
+                        soru = sesi_metne_cevir(client, sesli_soru).strip()
+                        if soru:
+                            gecmis = st.session_state.setdefault("soru_gecmisi", [])
+                            cevap = soruya_cevap_uret(client, b64_gorsel, soru, gecmis)
+                            gecmis.append({"soru": soru, "cevap": cevap, "mp3": metni_mp3_yap(cevap)})
+                            st.session_state["son_islenen_ses"] = ses_id
                             st.session_state["otomatik_cal"] = "cevap"
                     except Exception as hata:
                         st.error(f"Sesli soru yanıtlanırken bir sorun oluştu: {hata}")
 
         with st.expander("Mikrofon yerine yazılı soru sormak için tıklayın"):
-            yazili_soru = st.text_input("Sorunuzu buraya yazın:")
+            yazili = st.text_input("Sorunuzu buraya yazın:")
             if st.button("Yazılı Soruyu Yanıtla"):
-                if not yazili_soru.strip():
+                if not yazili.strip():
                     st.warning("Lütfen bir soru yazın.")
                 else:
                     with st.spinner("Sorunuz yanıtlanıyor..."):
                         try:
-                            cevap_metni = soruya_cevap_uret(client, base64_gorsel, yazili_soru.strip())
-                            st.session_state["son_soru_metni"] = yazili_soru.strip()
-                            st.session_state["son_cevap_metni"] = cevap_metni
-                            st.session_state["son_cevap_mp3"] = metni_mp3_yap(cevap_metni)
+                            gecmis = st.session_state.setdefault("soru_gecmisi", [])
+                            cevap = soruya_cevap_uret(client, b64_gorsel, yazili.strip(), gecmis)
+                            gecmis.append({"soru": yazili.strip(), "cevap": cevap, "mp3": metni_mp3_yap(cevap)})
                             st.session_state["otomatik_cal"] = "cevap"
                         except Exception as hata:
                             st.error(f"Soru yanıtlanırken bir sorun oluştu: {hata}")
 
-        if "son_cevap_metni" in st.session_state:
-            st.info(f"Sorulan Soru: {st.session_state['son_soru_metni']}")
-            st.write(st.session_state["son_cevap_metni"])
-            cevap_otomatik = st.session_state.get("otomatik_cal") == "cevap"
-            if cevap_otomatik:
+        gecmis = st.session_state.get("soru_gecmisi", [])
+        if gecmis:
+            guncel = gecmis[-1]
+            st.info(f"Son Soru: {guncel['soru']}")
+            st.write(guncel["cevap"])
+            oto = st.session_state.get("otomatik_cal") == "cevap"
+            if oto:
                 st.session_state.pop("otomatik_cal", None)
-            st.audio(st.session_state["son_cevap_mp3"], format="audio/mp3", autoplay=cevap_otomatik)
-            st.download_button(
-                label="Yanıtı MP3 Olarak İndir",
-                data=st.session_state["son_cevap_mp3"],
-                file_name="soru_yaniti.mp3",
-                mime="audio/mp3",
-            )
+            st.audio(guncel["mp3"], format="audio/mp3", autoplay=oto)
+            st.download_button("Son Yanıtı MP3 İndir", guncel["mp3"], "son_yanit.mp3", "audio/mp3", key="son_yanit_mp3")
+
+            if len(gecmis) > 1:
+                oncekiler = gecmis[:-1]
+                with st.expander(f"Önceki Sorular ve Yanıtlar ({len(oncekiler)})"):
+                    for idx, kayit in enumerate(oncekiler, start=1):
+                        st.markdown(f"**{idx}. Soru:** {kayit['soru']}")
+                        st.write(kayit["cevap"])
+                        st.audio(kayit["mp3"], format="audio/mp3", autoplay=False)
+                        st.download_button(
+                            f"{idx}. Yanıtı MP3 İndir",
+                            kayit["mp3"],
+                            f"soru_yaniti_{idx}.mp3",
+                            "audio/mp3",
+                            key=f"gecmis_mp3_{idx}",
+                        )
+                        if idx < len(oncekiler):
+                            st.divider()
+# SON
