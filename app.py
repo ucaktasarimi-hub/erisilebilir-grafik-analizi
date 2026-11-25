@@ -110,7 +110,7 @@ def groq_gorsel_yanit_al(client: Groq, base64_gorsel: str, istem: str) -> str:
                         ],
                     }
                 ],
-                temperature=0.3,
+                temperature=0.2,
             )
             return yanit.choices[0].message.content
         except Exception as e:
@@ -141,7 +141,7 @@ st.write("Görme engelli öğrenciler için sesli ve etkileşimli teknik grafik 
 if st.button("Uygulama Kullanım Rehberini Sesli Dinle"):
     rehber_metni = (
         "Erişilebilir Grafik Analiz Arayüzüne hoş geldiniz. "
-        "Birinci adımda incelemek istediğiniz grafik veya geometri görselini yükleyin. "
+        "Birinci adımda incelemek istediğiniz ders grafiği, tablo veya geometrik şekil görselini yükleyin. "
         "İkinci adımda detaylı öğretim modu veya hızlı özet modunu seçip Grafiği Analiz Et düğmesine basın. "
         "Oluşturulan açıklamayı ekrandan dinleyebilir veya MP3 dosyası olarak cihazınıza indirebilirsiniz. "
         "Üçüncü adımda ise mikrofon düğmesine basarak grafik hakkında sesli soru sorabilirsiniz."
@@ -159,11 +159,19 @@ st.divider()
 
 st.header("1. Adım: İncelenecek Grafiği Yükleyin")
 yuklenen_gorsel = st.file_uploader(
-    "Analiz edilecek grafik fotoğrafını seçin",
+    "Analiz edilecek ders grafiği veya şekil fotoğrafını seçin",
     type=["jpg", "jpeg", "png"],
 )
 
 if yuklenen_gorsel is not None:
+    dosya_kimligi = f"{yuklenen_gorsel.name}_{yuklenen_gorsel.size}"
+    if st.session_state.get("son_dosya") != dosya_kimligi:
+        st.session_state["son_dosya"] = dosya_kimligi
+        st.session_state.pop("analiz_sonucu", None)
+        st.session_state.pop("analiz_mp3", None)
+        st.session_state.pop("kapsam_disi", None)
+        st.session_state.pop("uyari_mp3", None)
+
     st.image(yuklenen_gorsel, caption="Yüklenen Görsel", use_container_width=True)
     base64_gorsel = gorseli_base64_yap(yuklenen_gorsel)
 
@@ -176,15 +184,22 @@ if yuklenen_gorsel is not None:
         ],
     )
 
+    kapsam_kurali = (
+        "ÖNCE GÖRSELİN KAPSAMINI KONTROL ET:\n"
+        "- Bu görsel bir ders materyali mi? (Matematik/fen grafiği, veri tablosu, geometrik şekil, "
+        "bilimsel/teknik şema, devre çizimi, harita veya şekilli ders/sınav sorusu)\n"
+        "- Eğer görsel bir ders materyali DEĞİLSE (örneğin insan fotoğrafı, özçekim, manzara, oda/masa fotoğrafı, "
+        "günlük eşya, hayvan, yiyecek veya alakasız bir resimse) başka HİÇBİR ŞEY YAZMA ve yalnızca şu tek kelimeyi döndür: KAPSAM_DISI\n\n"
+        "EĞER GÖRSEL BİR DERS MATERYALİ İSE:\n"
+        "- 'Merhaba', 'Hoş geldin', 'Ben senin öğretmeninim', 'Geometri öğretmeninim' gibi selamlama veya rol yapma cümleleri KULLANMA.\n"
+        "- İlk cümlede doğrudan bu görselin ne grafiği, tablosu veya şekli olduğunu söyle.\n"
+    )
+
     if st.button("Grafiği Analiz Et"):
         if anlatim_modu.startswith("Detaylı"):
             istem = (
-                "Görme engelli öğrenciler için teknik grafikleri, tabloları ve şekilleri doğrudan betimle. "
-                "KESİNLİKLE 'Merhaba', 'Hoş geldin', 'Ben senin öğretmeninim', 'Geometri öğretmeninim' gibi "
-                "selamlama, rol yapma veya tanıtım cümleleri kurma. "
-                "İlk cümlede doğrudan bu görselin ne grafiği veya ne şekli olduğunu net bir şekilde söyle "
-                "(örneğin: 'Bu görsel, ... gösteren bir sütun grafiğidir.' veya 'Bu görsel, ... içeren bir geometrik şekildir.'). "
-                "Ardından akıcı, anlaşılır ve sesli okumaya uygun Türkçe ile şu 4 adımda detaylandır:\n"
+                kapsam_kurali
+                + "Ardından akıcı, anlaşılır ve sesli okumaya uygun Türkçe ile şu 4 adımda detaylandır:\n"
                 "1. Görselin Tanımı: Grafiğin, tablonun veya şeklin tam olarak ne olduğunu ve konusunu belirt.\n"
                 "2. Eksenler ve Bileşenler: X ve Y eksenlerinin adlarını, birimlerini, renkleri veya geometrik elemanları tek tek açıkla.\n"
                 "3. Veri Eğilimi ve Kritik Noktalar: Artış, azalış, tepe, dip, açı, kenar ve kesişim noktalarını sayısal değerleriyle aktar.\n"
@@ -192,21 +207,36 @@ if yuklenen_gorsel is not None:
             )
         else:
             istem = (
-                "Görme engelli öğrenciler için bu görseli doğrudan özetle. "
-                "KESİNLİKLE 'Merhaba', 'Ben senin öğretmeninim' gibi selamlama veya tanıtım cümlesi kurma. "
-                "İlk cümlede doğrudan bu görselin ne grafiği veya ne şekli olduğunu söyle, "
-                "ardından 2-3 cümlede en önemli sayısal değerleri ve ana sonucu sesli dinlemeye uygun sade bir Türkçe ile aktar."
+                kapsam_kurali
+                + "Ardından 2-3 cümlede en önemli sayısal değerleri ve ana sonucu sesli dinlemeye uygun sade bir Türkçe ile özetle."
             )
 
-        with st.spinner("Grafik analiz ediliyor ve ses dosyası hazırlanıyor..."):
+        with st.spinner("Görsel kontrol ediliyor ve analiz hazırlanıyor..."):
             try:
                 analiz_metni = groq_gorsel_yanit_al(client, base64_gorsel, istem)
-                st.session_state["analiz_sonucu"] = analiz_metni
-                st.session_state["analiz_mp3"] = metni_mp3_yap(analiz_metni)
+                if "KAPSAM_DISI" in analiz_metni.strip().upper():
+                    st.session_state["kapsam_disi"] = True
+                    st.session_state.pop("analiz_sonucu", None)
+                    uyari_metni = (
+                        "Bu görsel bir ders grafiği, veri tablosu, harita veya geometrik şekil olarak algılanmadı. "
+                        "Lütfen analiz için bir eğitim materyali yükleyin."
+                    )
+                    st.session_state["uyari_mp3"] = metni_mp3_yap(uyari_metni)
+                else:
+                    st.session_state["kapsam_disi"] = False
+                    st.session_state["analiz_sonucu"] = analiz_metni
+                    st.session_state["analiz_mp3"] = metni_mp3_yap(analiz_metni)
             except Exception as hata:
                 st.error(f"Analiz sırasında bir sorun oluştu: {hata}")
 
-    if "analiz_sonucu" in st.session_state:
+    if st.session_state.get("kapsam_disi"):
+        st.warning(
+            "Bu görsel bir ders grafiği, veri tablosu, harita veya geometrik şekil olarak algılanmadı. "
+            "Lütfen analiz için bir eğitim materyali yükleyin."
+        )
+        st.audio(st.session_state["uyari_mp3"], format="audio/mp3")
+
+    elif "analiz_sonucu" in st.session_state:
         st.subheader("Grafik Açıklaması")
         st.write(st.session_state["analiz_sonucu"])
         st.audio(st.session_state["analiz_mp3"], format="audio/mp3")
@@ -234,8 +264,8 @@ if yuklenen_gorsel is not None:
                         st.warning("Lütfen mikrofonla bir soru kaydedin veya metin kutusuna yazın.")
                     else:
                         soru_istemi = (
-                            "Yüklenen bu grafiğe veya şekle bakarak soruyu doğrudan yanıtla. "
-                            "KESİNLİKLE 'Merhaba', 'Tabii ki', 'Ben senin öğretmeninim' gibi giriş veya selamlama cümleleri kullanma; "
+                            "Yüklenen bu ders grafiğine veya şekline bakarak soruyu doğrudan yanıtla. "
+                            "Selamlama veya rol yapma cümleleri kullanma; "
                             "ilk cümleden itibaren doğrudan sorunun cevabını açık, net ve sesli okumaya uygun Türkçe ile ver.\n\n"
                             f"Soru: {soru_metni}"
                         )
