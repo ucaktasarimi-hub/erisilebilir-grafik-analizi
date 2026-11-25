@@ -8,13 +8,6 @@ from groq import Groq
 
 st.set_page_config(page_title="Erişilebilir Grafik Asistanı", layout="centered")
 
-VISION_MODELS = [
-    "meta-llama/llama-4-scout-17b-16e-instruct",
-    "meta-llama/llama-4-maverick-17b-128e-instruct",
-    "llama-3.2-90b-vision-preview",
-    "llama-3.2-11b-vision-preview",
-]
-
 
 def get_groq_api_key() -> str:
     try:
@@ -41,7 +34,7 @@ def get_groq_api_key() -> str:
 
 def gorseli_base64_yap(yuklenen_dosya) -> str:
     img = Image.open(yuklenen_dosya).convert("RGB")
-    img.thumbnail((1600, 1600))
+    img.thumbnail((1200, 1200))
     tampon = io.BytesIO()
     img.save(tampon, format="JPEG", quality=85)
     return base64.b64encode(tampon.getvalue()).decode("utf-8")
@@ -56,9 +49,50 @@ def metni_mp3_yap(metin: str) -> bytes:
     return ses_tamponu.read()
 
 
+def aktif_gorsel_modellerini_bul(client: Groq) -> list[str]:
+    yedek_liste = [
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "meta-llama/llama-4-maverick-17b-128e-instruct",
+    ]
+    gorsel_etiketleri = (
+        "vision",
+        "scout",
+        "maverick",
+        "-vl",
+        "vl-",
+        "pixtral",
+        "llava",
+        "multimodal",
+        "llama-4",
+        "gemma-3",
+    )
+    haric_tut = ("whisper", "guard", "tts", "orpheus", "distil")
+    try:
+        modeller = client.models.list().data
+        aktif_ids = [
+            m.id
+            for m in modeller
+            if getattr(m, "active", True)
+            and not any(h in m.id.lower() for h in haric_tut)
+        ]
+        oncelikli = [
+            mid
+            for mid in aktif_ids
+            if any(etiket in mid.lower() for etiket in gorsel_etiketleri)
+        ]
+        sirali = []
+        for mid in oncelikli + yedek_liste:
+            if mid not in sirali and (not aktif_ids or mid in aktif_ids):
+                sirali.append(mid)
+        return sirali if sirali else (aktif_ids if aktif_ids else yedek_liste)
+    except Exception:
+        return yedek_liste
+
+
 def groq_gorsel_yanit_al(client: Groq, base64_gorsel: str, istem: str) -> str:
-    son_hata = None
-    for model_adi in VISION_MODELS:
+    aday_modeller = aktif_gorsel_modellerini_bul(client)
+    hatalar = []
+    for model_adi in aday_modeller:
         try:
             yanit = client.chat.completions.create(
                 model=model_adi,
@@ -77,13 +111,12 @@ def groq_gorsel_yanit_al(client: Groq, base64_gorsel: str, istem: str) -> str:
                     }
                 ],
                 temperature=0.3,
-                max_tokens=1500,
             )
             return yanit.choices[0].message.content
         except Exception as e:
-            son_hata = e
+            hatalar.append(f"{model_adi}: {e}")
             continue
-    raise RuntimeError(f"Görsel analiz modeli yanıt vermedi: {son_hata}")
+    raise RuntimeError("Aktif modellerden yanıt alınamadı:\n" + "\n".join(hatalar))
 
 
 def sesi_metne_cevir(client: Groq, ses_dosyasi) -> str:
