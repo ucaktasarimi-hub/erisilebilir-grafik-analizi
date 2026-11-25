@@ -1,5 +1,9 @@
 import os
 import io
+import re
+import math
+import wave
+import struct
 import base64
 import streamlit as st
 from PIL import Image
@@ -47,6 +51,66 @@ def metni_mp3_yap(metin: str) -> bytes:
     tts.write_to_fp(ses_tamponu)
     ses_tamponu.seek(0)
     return ses_tamponu.read()
+
+
+def sonifikasyon_etiketini_ayikla(ham_metin: str) -> tuple[str, list[float]]:
+    eslesme = re.search(r"\[SONIFIKASYON:\s*([^\]]+)\]", ham_metin, flags=re.IGNORECASE)
+    temiz_metin = re.sub(r"\[SONIFIKASYON:\s*[^\]]+\]", "", ham_metin, flags=re.IGNORECASE).strip()
+    if not eslesme:
+        return temiz_metin, []
+
+    icerik = eslesme.group(1).strip().upper()
+    if "YOK" in icerik:
+        return temiz_metin, []
+
+    sayilar = []
+    for parca in re.findall(r"-?\d+(?:\.\d+)?", icerik):
+        deger = max(0.0, min(100.0, float(parca)))
+        sayilar.append(deger)
+
+    return temiz_metin, sayilar if len(sayilar) >= 3 else []
+
+
+def veri_sonifikasyonu_wav_yap(degerler: list[float]) -> bytes:
+    ornekleme_hizi = 22050
+    toplam_sure = 3.5
+    toplam_ornek = int(ornekleme_hizi * toplam_sure)
+    min_frekans = 260.0
+    max_frekans = 780.0
+
+    tampon = io.BytesIO()
+    with wave.open(tampon, "wb") as wav_dosyasi:
+        wav_dosyasi.setnchannels(1)
+        wav_dosyasi.setsampwidth(2)
+        wav_dosyasi.setframerate(ornekleme_hizi)
+
+        faz = 0.0
+        n = len(degerler)
+        cerceveler = bytearray()
+
+        for i in range(toplam_ornek):
+            konum = (i / max(1, toplam_ornek - 1)) * (n - 1)
+            alt_indeks = min(int(konum), n - 2)
+            oran = konum - alt_indeks
+            interpolasyon = degerler[alt_indeks] * (1.0 - oran) + degerler[alt_indeks + 1] * oran
+
+            frekans = min_frekans + (interpolasyon / 100.0) * (max_frekans - min_frekans)
+            faz += 2.0 * math.pi * frekans / ornekleme_hizi
+
+            yumusatma = 1.0
+            gecis_ornek = int(ornekleme_hizi * 0.06)
+            if i < gecis_ornek:
+                yumusatma = i / gecis_ornek
+            elif i > toplam_ornek - gecis_ornek:
+                yumusatma = (toplam_ornek - i) / gecis_ornek
+
+            ornek_degeri = int(14000 * yumusatma * math.sin(faz))
+            cerceveler.extend(struct.pack("<h", ornek_degeri))
+
+        wav_dosyasi.writeframes(bytes(cerceveler))
+
+    tampon.seek(0)
+    return tampon.read()
 
 
 def aktif_gorsel_modellerini_bul(client: Groq) -> list[str]:
@@ -141,10 +205,10 @@ st.write("Görme engelli öğrenciler için sesli ve etkileşimli teknik grafik 
 if st.button("Uygulama Kullanım Rehberini Sesli Dinle"):
     rehber_metni = (
         "Erişilebilir Grafik Analiz Arayüzüne hoş geldiniz. "
-        "Birinci adımda incelemek istediğiniz ders grafiği, tablo veya geometrik şekil görselini yükleyin. "
-        "İkinci adımda detaylı öğretim modu veya hızlı özet modunu seçip Grafiği Analiz Et düğmesine basın. "
-        "Oluşturulan açıklamayı ekrandan dinleyebilir veya MP3 dosyası olarak cihazınıza indirebilirsiniz. "
-        "Üçüncü adımda ise mikrofon düğmesine basarak grafik hakkında sesli soru sorabilirsiniz."
+        "Birinci adımda cihazınızdan bir ders grafiği seçebilir veya kamerayla doğrudan fotoğraf çekebilirsiniz. "
+        "İkinci adımda anlatım modunu seçip Grafiği Analiz Et düğmesine basın; "
+        "açıklamayı dinleyebilir ve çizgi veya sütun grafiklerinde grafiğin yükseliş düşüş ses eğrisini duyabilirsiniz. "
+        "Üçüncü adımda ise mikrofona dokunup sorunuzu söyledikten sonra kaydı durdurduğunuzda yanıt otomatik seslendirilir."
     )
     rehber_mp3 = metni_mp3_yap(rehber_metni)
     st.audio(rehber_mp3, format="audio/mp3")
@@ -157,22 +221,39 @@ if st.button("Uygulama Kullanım Rehberini Sesli Dinle"):
 
 st.divider()
 
-st.header("1. Adım: İncelenecek Grafiği Yükleyin")
-yuklenen_gorsel = st.file_uploader(
-    "Analiz edilecek ders grafiği veya şekil fotoğrafını seçin",
-    type=["jpg", "jpeg", "png"],
+st.header("1. Adım: İncelenecek Grafiği Ekleyin")
+giris_yontemi = st.radio(
+    "Görsel ekleme yöntemini seçin:",
+    ["Cihazdan Dosya Yükle", "Kamera ile Fotoğraf Çek"],
+    horizontal=True,
 )
 
+if giris_yontemi == "Cihazdan Dosya Yükle":
+    yuklenen_gorsel = st.file_uploader(
+        "Analiz edilecek ders grafiği veya şekil fotoğrafını seçin",
+        type=["jpg", "jpeg", "png"],
+    )
+else:
+    yuklenen_gorsel = st.camera_input("Ders kitabındaki veya kağıttaki grafiğin fotoğrafını çekin")
+
 if yuklenen_gorsel is not None:
-    dosya_kimligi = f"{yuklenen_gorsel.name}_{yuklenen_gorsel.size}"
+    dosya_kimligi = f"{getattr(yuklenen_gorsel, 'name', 'gorsel')}_{getattr(yuklenen_gorsel, 'size', 0)}"
     if st.session_state.get("son_dosya") != dosya_kimligi:
         st.session_state["son_dosya"] = dosya_kimligi
-        st.session_state.pop("analiz_sonucu", None)
-        st.session_state.pop("analiz_mp3", None)
-        st.session_state.pop("kapsam_disi", None)
-        st.session_state.pop("uyari_mp3", None)
+        for anahtar in (
+            "analiz_sonucu",
+            "analiz_mp3",
+            "sonifikasyon_wav",
+            "kapsam_disi",
+            "uyari_mp3",
+            "son_islenen_ses",
+            "son_soru_metni",
+            "son_cevap_metni",
+            "son_cevap_mp3",
+        ):
+            st.session_state.pop(anahtar, None)
 
-    st.image(yuklenen_gorsel, caption="Yüklenen Görsel", use_container_width=True)
+    st.image(yuklenen_gorsel, caption="Seçilen Görsel", use_container_width=True)
     base64_gorsel = gorseli_base64_yap(yuklenen_gorsel)
 
     st.header("2. Adım: Anlatım Modunu Seçin ve Yorumlayın")
@@ -184,7 +265,7 @@ if yuklenen_gorsel is not None:
         ],
     )
 
-    kapsam_kurali = (
+    kapsam_ve_sonifikasyon_kurali = (
         "ÖNCE GÖRSELİN KAPSAMINI KONTROL ET:\n"
         "- Bu görsel bir ders materyali mi? (Matematik/fen grafiği, veri tablosu, geometrik şekil, "
         "bilimsel/teknik şema, devre çizimi, harita veya şekilli ders/sınav sorusu)\n"
@@ -195,26 +276,36 @@ if yuklenen_gorsel is not None:
         "- İlk cümlede doğrudan bu görselin ne grafiği, tablosu veya şekli olduğunu söyle.\n"
     )
 
+    sonifikasyon_ek_talimati = (
+        "\n\nEN SONA EKLE (Kullanıcıya okunmayacak teknik veri satırı):\n"
+        "- Eğer görsel soldan sağa sayısal değişim gösteren bir çizgi grafiği, sütun grafiği, fonksiyon eğrisi veya "
+        "iklim grafiği ise, eğrinin soldan sağa genel yükseliş/düşüş eğilimini 0 ile 100 arasında normalize edilmiş "
+        "8 ila 12 sayı ile en son satıra şu formatta yaz: [SONIFIKASYON: 15, 30, 55, 80, 75, 40, 20, 10]\n"
+        "- Eğer görsel geometrik şekil, devre şeması, harita veya sadece metin/tablo ise en son satıra yalnızca şunu yaz: [SONIFIKASYON: YOK]"
+    )
+
     if st.button("Grafiği Analiz Et"):
         if anlatim_modu.startswith("Detaylı"):
             istem = (
-                kapsam_kurali
+                kapsam_ve_sonifikasyon_kurali
                 + "Ardından akıcı, anlaşılır ve sesli okumaya uygun Türkçe ile şu 4 adımda detaylandır:\n"
                 "1. Görselin Tanımı: Grafiğin, tablonun veya şeklin tam olarak ne olduğunu ve konusunu belirt.\n"
                 "2. Eksenler ve Bileşenler: X ve Y eksenlerinin adlarını, birimlerini, renkleri veya geometrik elemanları tek tek açıkla.\n"
                 "3. Veri Eğilimi ve Kritik Noktalar: Artış, azalış, tepe, dip, açı, kenar ve kesişim noktalarını sayısal değerleriyle aktar.\n"
                 "4. Temel Sonuç: Bu görselden çıkarılması gereken ana bilgiyi özetle."
+                + sonifikasyon_ek_talimati
             )
         else:
             istem = (
-                kapsam_kurali
+                kapsam_ve_sonifikasyon_kurali
                 + "Ardından 2-3 cümlede en önemli sayısal değerleri ve ana sonucu sesli dinlemeye uygun sade bir Türkçe ile özetle."
+                + sonifikasyon_ek_talimati
             )
 
         with st.spinner("Görsel kontrol ediliyor ve analiz hazırlanıyor..."):
             try:
-                analiz_metni = groq_gorsel_yanit_al(client, base64_gorsel, istem)
-                if "KAPSAM_DISI" in analiz_metni.strip().upper():
+                ham_yanit = groq_gorsel_yanit_al(client, base64_gorsel, istem)
+                if "KAPSAM_DISI" in ham_yanit.strip().upper():
                     st.session_state["kapsam_disi"] = True
                     st.session_state.pop("analiz_sonucu", None)
                     uyari_metni = (
@@ -223,9 +314,14 @@ if yuklenen_gorsel is not None:
                     )
                     st.session_state["uyari_mp3"] = metni_mp3_yap(uyari_metni)
                 else:
+                    temiz_analiz, sonifikasyon_verisi = sonifikasyon_etiketini_ayikla(ham_yanit)
                     st.session_state["kapsam_disi"] = False
-                    st.session_state["analiz_sonucu"] = analiz_metni
-                    st.session_state["analiz_mp3"] = metni_mp3_yap(analiz_metni)
+                    st.session_state["analiz_sonucu"] = temiz_analiz
+                    st.session_state["analiz_mp3"] = metni_mp3_yap(temiz_analiz)
+                    if sonifikasyon_verisi:
+                        st.session_state["sonifikasyon_wav"] = veri_sonifikasyonu_wav_yap(sonifikasyon_verisi)
+                    else:
+                        st.session_state.pop("sonifikasyon_wav", None)
             except Exception as hata:
                 st.error(f"Analiz sırasında bir sorun oluştu: {hata}")
 
@@ -247,37 +343,70 @@ if yuklenen_gorsel is not None:
             mime="audio/mp3",
         )
 
+        if "sonifikasyon_wav" in st.session_state:
+            st.markdown("**Grafiğin Ses Eğrisi (Veri Sonifikasyonu)**")
+            st.caption("Soldan sağa değer artışları ince sese, azalışlar kalın sese dönüşür.")
+            st.audio(st.session_state["sonifikasyon_wav"], format="audio/wav")
+            st.download_button(
+                label="Ses Eğrisini İndir (WAV)",
+                data=st.session_state["sonifikasyon_wav"],
+                file_name="grafik_sonifikasyon.wav",
+                mime="audio/wav",
+            )
+
         st.divider()
         st.header("3. Adım: Grafik Hakkında Soru Sorun")
-        sesli_soru = st.audio_input("Mikrofona tıklayıp sorunuzu sesli sorun")
-        yazili_soru = st.text_input("Veya sorunuzu buraya yazın:")
+        sesli_soru = st.audio_input("Mikrofona dokunun, sorunuzu söyleyin ve kaydı durdurun (otomatik yanıtlanır)")
 
-        if st.button("Soruyu Yanıtla"):
-            soru_metni = yazili_soru.strip()
-            with st.spinner("Sorunuz yanıtlanıyor..."):
-                try:
-                    if sesli_soru is not None and not soru_metni:
-                        soru_metni = sesi_metne_cevir(client, sesli_soru)
-                        st.info(f"Anlaşılan Sorunuz: {soru_metni}")
+        if sesli_soru is not None:
+            ses_kimligi = f"{getattr(sesli_soru, 'name', 'ses')}_{getattr(sesli_soru, 'size', 0)}"
+            if st.session_state.get("son_islenen_ses") != ses_kimligi:
+                with st.spinner("Sesli sorunuz algılanıyor ve yanıt hazırlanıyor..."):
+                    try:
+                        soru_metni = sesi_metne_cevir(client, sesli_soru).strip()
+                        if soru_metni:
+                            soru_istemi = (
+                                "Yüklenen bu ders grafiğine veya şekline bakarak soruyu doğrudan yanıtla. "
+                                "Selamlama veya rol yapma cümleleri kullanma; "
+                                "ilk cümleden itibaren doğrudan sorunun cevabını açık, net ve sesli okumaya uygun Türkçe ile ver.\n\n"
+                                f"Soru: {soru_metni}"
+                            )
+                            cevap_metni = groq_gorsel_yanit_al(client, base64_gorsel, soru_istemi)
+                            st.session_state["son_islenen_ses"] = ses_kimligi
+                            st.session_state["son_soru_metni"] = soru_metni
+                            st.session_state["son_cevap_metni"] = cevap_metni
+                            st.session_state["son_cevap_mp3"] = metni_mp3_yap(cevap_metni)
+                    except Exception as hata:
+                        st.error(f"Sesli soru yanıtlanırken bir sorun oluştu: {hata}")
 
-                    if not soru_metni:
-                        st.warning("Lütfen mikrofonla bir soru kaydedin veya metin kutusuna yazın.")
-                    else:
-                        soru_istemi = (
-                            "Yüklenen bu ders grafiğine veya şekline bakarak soruyu doğrudan yanıtla. "
-                            "Selamlama veya rol yapma cümleleri kullanma; "
-                            "ilk cümleden itibaren doğrudan sorunun cevabını açık, net ve sesli okumaya uygun Türkçe ile ver.\n\n"
-                            f"Soru: {soru_metni}"
-                        )
-                        cevap_metni = groq_gorsel_yanit_al(client, base64_gorsel, soru_istemi)
-                        cevap_mp3 = metni_mp3_yap(cevap_metni)
-                        st.write(cevap_metni)
-                        st.audio(cevap_mp3, format="audio/mp3")
-                        st.download_button(
-                            label="Yanıtı MP3 Olarak İndir",
-                            data=cevap_mp3,
-                            file_name="soru_yaniti.mp3",
-                            mime="audio/mp3",
-                        )
-                except Exception as hata:
-                    st.error(f"Soru yanıtlanırken bir sorun oluştu: {hata}")
+        with st.expander("Mikrofon yerine yazılı soru sormak için tıklayın"):
+            yazili_soru = st.text_input("Sorunuzu buraya yazın:")
+            if st.button("Yazılı Soruyu Yanıtla"):
+                if not yazili_soru.strip():
+                    st.warning("Lütfen bir soru yazın.")
+                else:
+                    with st.spinner("Sorunuz yanıtlanıyor..."):
+                        try:
+                            soru_istemi = (
+                                "Yüklenen bu ders grafiğine veya şekline bakarak soruyu doğrudan yanıtla. "
+                                "Selamlama veya rol yapma cümleleri kullanma; "
+                                "ilk cümleden itibaren doğrudan sorunun cevabını açık, net ve sesli okumaya uygun Türkçe ile ver.\n\n"
+                                f"Soru: {yazili_soru.strip()}"
+                            )
+                            cevap_metni = groq_gorsel_yanit_al(client, base64_gorsel, soru_istemi)
+                            st.session_state["son_soru_metni"] = yazili_soru.strip()
+                            st.session_state["son_cevap_metni"] = cevap_metni
+                            st.session_state["son_cevap_mp3"] = metni_mp3_yap(cevap_metni)
+                        except Exception as hata:
+                            st.error(f"Soru yanıtlanırken bir sorun oluştu: {hata}")
+
+        if "son_cevap_metni" in st.session_state:
+            st.info(f"Sorulan Soru: {st.session_state['son_soru_metni']}")
+            st.write(st.session_state["son_cevap_metni"])
+            st.audio(st.session_state["son_cevap_mp3"], format="audio/mp3")
+            st.download_button(
+                label="Yanıtı MP3 Olarak İndir",
+                data=st.session_state["son_cevap_mp3"],
+                file_name="soru_yaniti.mp3",
+                mime="audio/mp3",
+            )
