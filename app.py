@@ -1,304 +1,214 @@
+import os
 import io
-import re
+import base64
 import streamlit as st
-from google import genai
-from google.genai import types
-from gtts import gTTS
 from PIL import Image
-try:
-    API_KEY = st.secrets["API_KEY"]
-except Exception:
-    from gizli_anahtar import API_KEY
+from gtts import gTTS
+from groq import Groq
 
-# Yapay zeka bağlantısını kuruyoruz
-client = genai.Client(vertexai=True, api_key=API_KEY.strip())
+st.set_page_config(page_title="Erişilebilir Grafik Asistanı", layout="centered")
 
-def bilimsel_metin_duzenle(metin):
-    """
-    NLP Ön İşleme Katmanı:
-    Bilimsel gösterimleri, üslü ifadeleri, birimleri ve matematik sembollerini
-    seslendirme motorunun doğru telaffuz edeceği Türkçe metne dönüştürür.
-    """
-    duzenli = (
-        metin.replace("---", "")
-        .replace("- ", "")
-        .replace("*", "")
-        .replace("#", "")
+VISION_MODELS = [
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "meta-llama/llama-4-maverick-17b-128e-instruct",
+    "llama-3.2-90b-vision-preview",
+    "llama-3.2-11b-vision-preview",
+]
+
+
+def get_groq_api_key() -> str:
+    try:
+        if "GROQ_API_KEY" in st.secrets:
+            return str(st.secrets["GROQ_API_KEY"]).strip().strip('"').strip("'")
+    except Exception:
+        pass
+
+    env_key = os.environ.get("GROQ_API_KEY", "").strip().strip('"').strip("'")
+    if env_key:
+        return env_key
+
+    try:
+        import gizli_anahtar
+        key = getattr(gizli_anahtar, "GROQ_API_KEY", "") or getattr(gizli_anahtar, "API_KEY", "")
+        temiz_key = str(key).strip().strip('"').strip("'")
+        if temiz_key.startswith("gsk_"):
+            return temiz_key
+    except ImportError:
+        pass
+
+    return ""
+
+
+def gorseli_base64_yap(yuklenen_dosya) -> str:
+    img = Image.open(yuklenen_dosya).convert("RGB")
+    img.thumbnail((1600, 1600))
+    tampon = io.BytesIO()
+    img.save(tampon, format="JPEG", quality=85)
+    return base64.b64encode(tampon.getvalue()).decode("utf-8")
+
+
+def metni_mp3_yap(metin: str) -> bytes:
+    temiz_metin = metin.replace("*", "").replace("#", "").replace("`", "")
+    tts = gTTS(text=temiz_metin, lang="tr")
+    ses_tamponu = io.BytesIO()
+    tts.write_to_fp(ses_tamponu)
+    ses_tamponu.seek(0)
+    return ses_tamponu.read()
+
+
+def groq_gorsel_yanit_al(client: Groq, base64_gorsel: str, istem: str) -> str:
+    son_hata = None
+    for model_adi in VISION_MODELS:
+        try:
+            yanit = client.chat.completions.create(
+                model=model_adi,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": istem},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_gorsel}"
+                                },
+                            },
+                        ],
+                    }
+                ],
+                temperature=0.3,
+                max_tokens=1500,
+            )
+            return yanit.choices[0].message.content
+        except Exception as e:
+            son_hata = e
+            continue
+    raise RuntimeError(f"Görsel analiz modeli yanıt vermedi: {son_hata}")
+
+
+def sesi_metne_cevir(client: Groq, ses_dosyasi) -> str:
+    transkript = client.audio.transcriptions.create(
+        file=("soru.wav", ses_dosyasi.getvalue()),
+        model="whisper-large-v3-turbo",
+        language="tr",
     )
+    return transkript.text
 
-    # Bilimsel gösterim dönüşümleri (Örn: 1e-8 -> 1 çarpı 10 üzeri eksi 8)
-    duzenli = re.sub(r"(\d+)\s*[eE]\s*\+?(\d+)", r"\1 çarpı 10 üzeri \2", duzenli)
-    duzenli = re.sub(r"(\d+)\s*[eE]\s*-(\d+)", r"\1 çarpı 10 üzeri eksi \2", duzenli)
-    duzenli = re.sub(r"10\s*\^\s*-(\d+)", r"10 üzeri eksi \1", duzenli)
-    duzenli = re.sub(r"10\s*\^\s*\+?(\d+)", r"10 üzeri \1", duzenli)
 
-    # Fizik ve matematik birimleri
-    birim_sozlugu = {
-        "m/s²": "metre bölü saniye kare",
-        "m/s^2": "metre bölü saniye kare",
-        "m/s": "metre bölü saniye",
-        "km/h": "kilometre bölü saat",
-        "km/sa": "kilometre bölü saat",
-        "°C": "santigrat derece",
-        "°F": "fahrenhayt derece",
-        "cm²": "santimetrekare",
-        "m²": "metrekare",
-        "cm³": "santimetreküp",
-        "m³": "metreküp",
-        "x²": "iks kare",
-        "x³": "iks küp",
-        "y²": "ye kare",
-    }
-    for sembol, okunus in birim_sozlugu.items():
-        duzenli = duzenli.replace(sembol, f" {okunus} ")
+api_key = get_groq_api_key()
+if not api_key:
+    st.error("GROQ_API_KEY bulunamadı. Lütfen Streamlit Secrets ayarlarına anahtarınızı ekleyin.")
+    st.stop()
 
-    # Matematiksel ve bilimsel semboller
-    sembol_sozlugu = {
-        "Δ": " delta ",
-        "≥": " büyük veya eşittir ",
-        "≤": " küçük veya eşittir ",
-        "≠": " eşit değildir ",
-        "≈": " yaklaşık olarak ",
-        "√": " karekök ",
-        "π": " pi ",
-        "α": " alfa ",
-        "β": " beta ",
-        "θ": " teta ",
-        "Ω": " ohm ",
-        "°": " derece ",
-        "%": " yüzde ",
-    }
-    for sembol, okunus in sembol_sozlugu.items():
-        duzenli = duzenli.replace(sembol, okunus)
+client = Groq(api_key=api_key)
 
-    duzenli = re.sub(r"[ \t]+", " ", duzenli).strip()
-    return duzenli
-
-def sese_cevir(metin):
-    okunacak_metin = bilimsel_metin_duzenle(metin)
-    tts = gTTS(text=okunacak_metin, lang="tr")
-    ses_hafiza = io.BytesIO()
-    tts.write_to_fp(ses_hafiza)
-    ses_hafiza.seek(0)
-    return ses_hafiza.read()
-
-def yapay_zekaya_sor(icerik_listesi):
-    hizli_modeller = ["gemini-3.8-flash-lite", "gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-flash-lite"]
-    onceki_basarili = st.session_state.get("calisan_model")
-    if onceki_basarili:
-        if onceki_basarili in hizli_modeller:
-            hizli_modeller.remove(onceki_basarili)
-        hizli_modeller.insert(0, onceki_basarili)
-
-    son_hata = ""
-    for model_adi in hizli_modeller:
-        try:
-            cevap = client.models.generate_content(
-                model=model_adi,
-                contents=icerik_listesi
-            )
-            st.session_state["calisan_model"] = model_adi
-            return cevap.text, ""
-        except Exception as hata:
-            son_hata = f"{model_adi}: {hata}"
-            continue
-
-    if "yedek_modeller" not in st.session_state:
-        yedekler = []
-        try:
-            for m in client.models.list():
-                isim = m.name.replace("models/", "")
-                if "gemini" in isim and "embedding" not in isim and "imagen" not in isim and "veo" not in isim and isim not in hizli_modeller:
-                    yedekler.append(isim)
-        except Exception:
-            pass
-        st.session_state["yedek_modeller"] = yedekler[:5]
-
-    for model_adi in st.session_state["yedek_modeller"]:
-        try:
-            cevap = client.models.generate_content(
-                model=model_adi,
-                contents=icerik_listesi
-            )
-            st.session_state["calisan_model"] = model_adi
-            return cevap.text, ""
-        except Exception as hata:
-            son_hata = f"{model_adi}: {hata}"
-            continue
-
-    return None, son_hata
-
-# --- ARAYÜZ BAŞLANGICI ---
 st.title("Erişilebilir Grafik Analiz Arayüzü")
 st.write("Görme engelli öğrenciler için sesli ve etkileşimli teknik grafik yorumlama asistanı")
 
-# Sesli Kullanım Rehberi
 if st.button("Uygulama Kullanım Rehberini Sesli Dinle"):
     rehber_metni = (
-        "Bu sayfada üç kolay adım bulunur. "
-        "Birinci adımda bilgisayarınızdan veya telefonunuzdan analiz edilecek grafik fotoğrafını seçip yükleyin. "
-        "İkinci adımda detaylı öğretim veya hızlı özet modunu seçip Grafiği Analiz Et butonuna basarak sesli açıklamayı dinleyebilir ve ses dosyası olarak indirebilirsiniz. "
-        "Üçüncü adımda ise sayfanın altındaki mikrofon simgesine basarak merak ettiğiniz tüm soruları sesli olarak sorabilirsiniz."
+        "Erişilebilir Grafik Analiz Arayüzüne hoş geldiniz. "
+        "Birinci adımda incelemek istediğiniz grafik veya geometri görselini yükleyin. "
+        "İkinci adımda detaylı öğretim modu veya hızlı özet modunu seçip Grafiği Analiz Et düğmesine basın. "
+        "Oluşturulan açıklamayı ekrandan dinleyebilir veya MP3 dosyası olarak cihazınıza indirebilirsiniz. "
+        "Üçüncü adımda ise mikrofon düğmesine basarak grafik hakkında sesli soru sorabilirsiniz."
     )
-    st.session_state["rehber_ses"] = sese_cevir(rehber_metni)
-
-if st.session_state.get("rehber_ses"):
-    st.audio(st.session_state["rehber_ses"], format="audio/mp3", autoplay=True)
+    rehber_mp3 = metni_mp3_yap(rehber_metni)
+    st.audio(rehber_mp3, format="audio/mp3")
+    st.download_button(
+        label="Kullanım Rehberini MP3 İndir",
+        data=rehber_mp3,
+        file_name="kullanim_rehberi.mp3",
+        mime="audio/mp3",
+    )
 
 st.divider()
 
-# 1. Bilgisayardan grafik seçme kutusu
-st.subheader("1. Adım: İncelenecek Grafiği Yükleyin")
-yuklenen_grafik = st.file_uploader("Analiz edilecek grafik fotoğrafını seçin", type=["jpg", "jpeg", "png"])
+st.header("1. Adım: İncelenecek Grafiği Yükleyin")
+yuklenen_gorsel = st.file_uploader(
+    "Analiz edilecek grafik fotoğrafını seçin",
+    type=["jpg", "jpeg", "png"],
+)
 
-if yuklenen_grafik is not None:
-    if st.session_state.get("son_grafik") != yuklenen_grafik.name:
-        st.session_state["son_grafik"] = yuklenen_grafik.name
-        st.session_state["analiz_metni"] = None
-        st.session_state["analiz_ses"] = None
-        st.session_state["sohbet_gecmisi"] = []
-        st.session_state["son_cevap_ses"] = None
-        st.session_state["son_ses_sorusu"] = None
+if yuklenen_gorsel is not None:
+    st.image(yuklenen_gorsel, caption="Yüklenen Görsel", use_container_width=True)
+    base64_gorsel = gorseli_base64_yap(yuklenen_gorsel)
 
-    gorsel = Image.open(yuklenen_grafik)
-    st.image(gorsel, caption="Yüklenen Görsel")
-
-    kucuk_gorsel = gorsel.copy()
-    kucuk_gorsel.thumbnail((1024, 1024))
-
-    # 2. Anlatım Modu ve Ana Grafik Analizi
-    st.subheader("2. Adım: Anlatım Modunu Seçin ve Yorumlayın")
+    st.header("2. Adım: Anlatım Modunu Seçin ve Yorumlayın")
     anlatim_modu = st.radio(
         "Anlatım derinliğini belirleyin:",
-        ["Detaylı Öğretim Modu (4 Adımlı Analiz)", "Hızlı Özet Modu (Kısa ve Net)"],
-        horizontal=True
+        [
+            "Detaylı Öğretim Modu (4 Adımlı Analiz)",
+            "Hızlı Özet Modu (Kısa ve Net)",
+        ],
     )
 
     if st.button("Grafiği Analiz Et"):
-        with st.spinner("Görsel inceleniyor, lütfen bekleyin..."):
-            if anlatim_modu == "Hızlı Özet Modu (Kısa ve Net)":
-                mod_talimati = """
-                DURUM A - Görsel bir veri grafiği veya tablo ise:
-                4 başlık açmadan, grafiğin neyi gösterdiğini, eksen değişkenlerini, en kritik değişimi ve temel bilimsel sonucunu toplam 3 kısa ve net cümlede özetle.
-                """
-            else:
-                mod_talimati = """
-                DURUM A - Görsel bir veri grafiği veya tablo ise (çizgi, sütun, pasta, dağılım grafiği vb.):
-                Şu 4 adımı sırayla uygula:
-                1. Grafiğin Türü ve Başlığı: Bu nasıl bir grafik ve neyi gösteriyor?
-                2. Eksenler ve Birimler: Yatay (X) ve dikey (Y) eksenlerde hangi değişkenler ve birimler var?
-                3. Genel Eğilim ve Kritik Noktalar: Değerler nasıl değişiyor (artış, azalış, sabit kalma) ve en yüksek/en düşük noktalar nereler?
-                4. Bilimsel Yorum: Bu grafikten çıkarılması gereken temel bilimsel sonuç nedir?
-                """
-
-            yonerge = f"""
-            Sen görme engelli lise öğrencileri için teknik grafikleri ve ders şemalarını yorumlayan bir erişilebilirlik asistanısın.
-            Kesinlikle 'Merhaba', 'Merhaba öğrencim', 'Sevgili öğrencim' gibi selamlama, hitap veya giriş cümleleri kullanma. Doğrudan sonuca başla ve ekstra kapanış cümlesi ekleme.
-            Ekran okuyucu programlarla uyumlu, sade, nesnel ve anlaşılır bir dil kullan. Karmaşık semboller, yıldızlar veya ayırıcı çizgiler kullanma.
-
-            Önce yüklenen görselin türünü belirle ve şu üç kuraldan uygun olanını uygula:
-
-            {mod_talimati}
-
-            DURUM B - Görsel bir ders şeması veya geometrik şekil ise (geometri çizimi, elektrik devresi, kuvvet diyagramı, biyoloji şeması vb.):
-            Eksen aramaya çalışma. Bunun yerine şeklin veya şemanın türünü, üzerindeki tüm harf, açı, ölçü ve etiketleri, parçaların birbirine göre konumunu ve bilimsel/matematiksel anlamını açıkla.
-
-            DURUM C - Görsel herhangi bir grafik, tablo, geometrik şekil veya ders şeması içermeyen günlük bir fotoğraf ise (manzara, insan, eşya vb.):
-            Görseli betimlemeye çalışma. Yalnızca şu cümleyi yaz: "Yüklenen görsel bir grafik veya ders şeması değildir. Lütfen analiz için matematik, fen veya teknik bir grafik yükleyin."
-            """
-            cevap_metni, son_hata = yapay_zekaya_sor([yonerge, kucuk_gorsel])
-
-            if cevap_metni:
-                st.session_state["analiz_metni"] = cevap_metni
-                st.session_state["analiz_ses"] = None
-                st.session_state["sohbet_gecmisi"] = []
-            else:
-                st.warning("Yapay zeka sunucularında şu an yoğunluk var. Lütfen birkaç saniye bekleyip tekrar deneyin.")
-                st.caption(f"Teknik bilgi: {son_hata}")
-
-    if st.session_state.get("analiz_metni"):
-        st.write(st.session_state["analiz_metni"])
-
-        if st.button("Analizi Sesli Dinle"):
-            with st.spinner("Ses dosyası hazırlanıyor..."):
-                st.session_state["analiz_ses"] = sese_cevir(st.session_state["analiz_metni"])
-
-        if st.session_state.get("analiz_ses"):
-            st.audio(st.session_state["analiz_ses"], format="audio/mp3", autoplay=True)
-            st.download_button(
-                label="Ses Kaydını İndir (.mp3)",
-                data=st.session_state["analiz_ses"],
-                file_name="grafik_analizi.mp3",
-                mime="audio/mp3"
+        if anlatim_modu.startswith("Detaylı"):
+            istem = (
+                "Sen görme engelli öğrencilere teknik grafikleri, tabloları ve şekilleri betimleyen uzman bir öğretmensin. "
+                "Bu görseli akıcı, anlaşılır ve sesli okumaya uygun Türkçe ile tam olarak şu 4 adımda açıkla:\n"
+                "1. Genel Bakış: Grafiğin veya şeklin ne olduğunu ve ana konusunu söyle.\n"
+                "2. Eksenler ve Bileşenler: X ve Y eksenlerinin adlarını, birimlerini, renkleri veya geometrik elemanları net belirt.\n"
+                "3. Veri Eğilimi ve Kritik Noktalar: Artış, azalış, tepe, dip ve kesişim noktalarını sayısal değerleriyle aktar.\n"
+                "4. Pedagojik Sonuç: Öğrencinin bu grafikten çıkarması gereken temel sonucu özetle."
+            )
+        else:
+            istem = (
+                "Sen görme engelli öğrencilere destek olan bir öğretmensin. "
+                "Bu görseli 3-4 cümlede, en önemli sayısal değerleri ve ana sonucu vurgulayarak "
+                "sesli dinlemeye uygun sade bir Türkçe ile özetle."
             )
 
-        # 3. Bağlamı Hatırlayan Sesli ve Yazılı Soru-Cevap
+        with st.spinner("Grafik analiz ediliyor ve ses dosyası hazırlanıyor..."):
+            try:
+                analiz_metni = groq_gorsel_yanit_al(client, base64_gorsel, istem)
+                st.session_state["analiz_sonucu"] = analiz_metni
+                st.session_state["analiz_mp3"] = metni_mp3_yap(analiz_metni)
+            except Exception as hata:
+                st.error(f"Analiz sırasında bir sorun oluştu: {hata}")
+
+    if "analiz_sonucu" in st.session_state:
+        st.subheader("Grafik Açıklaması")
+        st.write(st.session_state["analiz_sonucu"])
+        st.audio(st.session_state["analiz_mp3"], format="audio/mp3")
+        st.download_button(
+            label="Analizi MP3 Olarak İndir",
+            data=st.session_state["analiz_mp3"],
+            file_name="grafik_analizi.mp3",
+            mime="audio/mp3",
+        )
+
         st.divider()
-        st.subheader("3. Adım: Grafik Hakkında Sesli Soru Sor")
-        st.write("Mikrofona basıp sorunuzu söyleyin. Asistan önceki konuşmalarınızı hatırlayarak sorunuzu yanıtlar ve sesli okur.")
+        st.header("3. Adım: Grafik Hakkında Soru Sorun")
+        sesli_soru = st.audio_input("Mikrofona tıklayıp sorunuzu sesli sorun")
+        yazili_soru = st.text_input("Veya sorunuzu buraya yazın:")
 
-        sesli_soru = st.audio_input("Sorunuzu kaydetmek için mikrofona basın")
+        if st.button("Soruyu Yanıtla"):
+            soru_metni = yazili_soru.strip()
+            with st.spinner("Sorunuz yanıtlanıyor..."):
+                try:
+                    if sesli_soru is not None and not soru_metni:
+                        soru_metni = sesi_metne_cevir(client, sesli_soru)
+                        st.info(f"Anlaşılan Sorunuz: {soru_metni}")
 
-        if sesli_soru is not None:
-            ses_verisi = sesli_soru.getvalue()
-            if ses_verisi != st.session_state.get("son_ses_sorusu"):
-                st.session_state["son_ses_sorusu"] = ses_verisi
-                with st.spinner("Sesli sorunuz dinleniyor ve önceki bilgilerle birlikte değerlendiriliyor..."):
-                    ses_turu = sesli_soru.type if sesli_soru.type else "audio/wav"
-                    ses_parcasi = types.Part.from_bytes(data=ses_verisi, mime_type=ses_turu)
-
-                    gecmis_ozeti = "\n".join(
-                        [f"Soru: {s}\nCevap: {c}" for s, c in st.session_state["sohbet_gecmisi"]]
-                    )
-                    sesli_yonerge = f"""
-                    Sen görme engelli lise öğrencileri için teknik grafikleri ve ders şemalarını yorumlayan bir erişilebilirlik asistanısın.
-                    Kesinlikle 'Merhaba', 'Merhaba öğrencim', 'Sevgili öğrencim' gibi selamlama, hitap veya giriş cümleleri kullanma; doğrudan sorunun cevabıyla başla ve ekstra kapanış cümlesi ekleme.
-                    Görselin genel özeti: {st.session_state['analiz_metni']}
-                    Önceki soru-cevap geçmişi:
-                    {gecmis_ozeti}
-
-                    Ekteki ses kaydında kullanıcının yeni sorusu bulunuyor.
-                    Önceki konuşmaları da dikkate alarak, ekran okuyucu uyumlu, yıldız veya ayırıcı çizgi kullanmadan sade, net ve doğrudan bir Türkçe cevap ver.
-                    """
-                    soru_yaniti, hata_detay = yapay_zekaya_sor([sesli_yonerge, kucuk_gorsel, ses_parcasi])
-                    if soru_yaniti:
-                        st.session_state["sohbet_gecmisi"].append(("Sesli Soru", soru_yaniti))
-                        st.session_state["son_cevap_ses"] = sese_cevir(soru_yaniti)
+                    if not soru_metni:
+                        st.warning("Lütfen mikrofonla bir soru kaydedin veya metin kutusuna yazın.")
                     else:
-                        st.warning("Şu an sesli sorunuza cevap üretilemedi, lütfen tekrar deneyin.")
-
-        with st.expander("Alternatif: Soruyu Yazarak Sormak İsterseniz"):
-            ogrenci_sorusu = st.text_input("Grafikle ilgili sorunuzu yazın")
-            if st.button("Yazılı Soruyu Cevapla"):
-                if ogrenci_sorusu.strip():
-                    with st.spinner("Sorunuz inceleniyor..."):
-                        gecmis_ozeti = "\n".join(
-                            [f"Soru: {s}\nCevap: {c}" for s, c in st.session_state["sohbet_gecmisi"]]
+                        soru_istemi = (
+                            "Sen görme engelli bir öğrenciye yardımcı olan bir öğretmensin. "
+                            "Yüklenen bu grafiğe bakarak öğrencinin şu sorusunu açık, net ve sesli okumaya uygun "
+                            f"Türkçe ile yanıtla:\n\nÖğrencinin Sorusu: {soru_metni}"
                         )
-                        soru_yonergesi = f"""
-                        Sen görme engelli lise öğrencileri için teknik grafikleri ve ders şemalarını yorumlayan bir erişilebilirlik asistanısın.
-                        Kesinlikle 'Merhaba', 'Merhaba öğrencim', 'Sevgili öğrencim' gibi selamlama, hitap veya giriş cümleleri kullanma; doğrudan sorunun cevabıyla başla ve ekstra kapanış cümlesi ekleme.
-                        Görselin genel özeti: {st.session_state['analiz_metni']}
-                        Önceki soru-cevap geçmişi:
-                        {gecmis_ozeti}
-
-                        Kullanıcının yeni sorusu: {ogrenci_sorusu}
-                        Önceki konuşmaları da dikkate alarak, ekran okuyucu uyumlu, yıldız veya ayırıcı çizgi kullanmadan sade, net ve doğrudan bir Türkçe cevap ver.
-                        """
-                        soru_yaniti, hata_detay = yapay_zekaya_sor([soru_yonergesi, kucuk_gorsel])
-                        if soru_yaniti:
-                            st.session_state["sohbet_gecmisi"].append((ogrenci_sorusu, soru_yaniti))
-                            st.session_state["son_cevap_ses"] = sese_cevir(soru_yaniti)
-                        else:
-                            st.warning("Şu an cevap üretilemedi, lütfen tekrar deneyin.")
-                else:
-                    st.info("Lütfen önce yukarıdaki kutuya bir soru yazın.")
-
-        # Sohbet geçmişini ve en son cevabın ses oynatıcısını göster
-        if st.session_state.get("sohbet_gecmisi"):
-            st.subheader("Soru - Cevap Geçmişi")
-            for idx, (soru_m, cevap_m) in enumerate(st.session_state["sohbet_gecmisi"], 1):
-                st.markdown(f"**{idx}. Soru ({soru_m}):** {cevap_m}")
-
-            if st.session_state.get("son_cevap_ses"):
-                st.audio(st.session_state["son_cevap_ses"], format="audio/mp3", autoplay=True)
+                        cevap_metni = groq_gorsel_yanit_al(client, base64_gorsel, soru_istemi)
+                        cevap_mp3 = metni_mp3_yap(cevap_metni)
+                        st.write(cevap_metni)
+                        st.audio(cevap_mp3, format="audio/mp3")
+                        st.download_button(
+                            label="Yanıtı MP3 Olarak İndir",
+                            data=cevap_mp3,
+                            file_name="soru_yaniti.mp3",
+                            mime="audio/mp3",
+                        )
+                except Exception as hata:
+                    st.error(f"Soru yanıtlanırken bir sorun oluştu: {hata}")
