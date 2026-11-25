@@ -44,9 +44,25 @@ def gorseli_base64_yap(yuklenen_dosya) -> str:
     return base64.b64encode(tampon.getvalue()).decode("utf-8")
 
 
+def ses_icin_metni_duzenle(metin: str) -> str:
+    # Ekrandaki metni bozmadan yalnızca gTTS telaffuzunu netleştirir
+    duzenli = metin.replace("*", "").replace("#", "").replace("`", "")
+    duzenli = re.sub(r"\b[Xx]\s+ve\s+[Yy]\b", "iks ve ye", duzenli)
+    duzenli = re.sub(r"\b[Yy]\s+ve\s+[Xx]\b", "ye ve iks", duzenli)
+    duzenli = re.sub(r"\b[Yy]\s*[-–]?\s*(eksen\w*)", r"ye \1", duzenli)
+    duzenli = re.sub(r"\b[Xx]\s*[-–]?\s*(eksen\w*)", r"iks \1", duzenli)
+    duzenli = re.sub(r"\b[Yy]\s*=", "ye eşittir ", duzenli)
+    duzenli = re.sub(r"\b[Xx]\s*=", "iks eşittir ", duzenli)
+    # İki nokta ve satır sonlarında ses düşmesini önlemek için cümle sonu duraksaması ekle
+    duzenli = duzenli.replace(":", ". ")
+    duzenli = re.sub(r"\n+", ". ", duzenli)
+    duzenli = re.sub(r"\.\s*\.", ".", duzenli)
+    return duzenli.strip()
+
+
 def metni_mp3_yap(metin: str) -> bytes:
-    temiz_metin = metin.replace("*", "").replace("#", "").replace("`", "")
-    tts = gTTS(text=temiz_metin, lang="tr")
+    ses_metni = ses_icin_metni_duzenle(metin)
+    tts = gTTS(text=ses_metni, lang="tr", slow=False)
     ses_tamponu = io.BytesIO()
     tts.write_to_fp(ses_tamponu)
     ses_tamponu.seek(0)
@@ -362,7 +378,7 @@ if yuklenen_gorsel is not None:
                 kapsam_ve_sonifikasyon_kurali
                 + "Ardından akıcı, anlaşılır ve sesli okumaya uygun Türkçe ile şu 4 adımda kısa ve öz detaylandır:\n"
                 "1. Görselin Tanımı: Grafiğin, tablonun veya şeklin tam olarak ne olduğunu ve konusunu belirt.\n"
-                "2. Eksenler ve Bileşenler: X ve Y eksenlerinin adlarını, birimlerini, renkleri veya geometrik elemanları net açıkla.\n"
+                "2. Eksenler ve Bileşenler: Yatay X ekseni ve dikey Y ekseninin adlarını, birimlerini, renkleri veya geometrik elemanları net açıkla.\n"
                 "3. Veri Eğilimi ve Kritik Noktalar: Artış, azalış, tepe, dip, açı, kenar ve kesişim noktalarını sayısal değerleriyle aktar.\n"
                 "4. Temel Sonuç: Bu görselden çıkarılması gereken ana bilgiyi özetle."
                 + sonifikasyon_ek_talimati
